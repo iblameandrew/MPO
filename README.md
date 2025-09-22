@@ -1,2 +1,3 @@
 # MPO
-Multi-policy optimization - a foundational RL algorithm based using a collection of surrogate functions that emulate the eight jungian analytical functions.
+
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/69828e58-26ca-4b04-8ea0-6f4786239885" />
