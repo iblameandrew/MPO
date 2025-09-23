@@ -2,110 +2,120 @@
 
 <img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/69828e58-26ca-4b04-8ea0-6f4786239885" />
 
+# PPO with Dynamic, Switchable Objectives
 
-### The Meta-Controller: Dynamic Switching Mechanism
+This repository contains a Python implementation of a Proximal Policy Optimization (PPO) agent enhanced with a dynamic and switchable objective system. This allows the reinforcement learning agent to dynamically change its reward function during training, enabling more complex and adaptive behaviors. The framework is designed to be modular and extensible, allowing for the easy addition of new, custom objectives.
 
-The "context" is determined by the agent's recent performance and data statistics. The Meta-Controller is a high-level module that decides which of the 12 functions to use. A practical way to implement this is with a multi-armed bandit algorithm, such as Upper Confidence Bound (UCB1).
+## Table of Contents
+- [Core Concepts](#core-concepts)
+- [Features](#features)
+- [Getting Started](#getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+- [How to Use](#how-to-use)
+  - [Basic Training Loop](#basic-training-loop)
+  - [Configuration](#configuration)
+  - [Defining a Custom Objective](#defining-a-custom-objective)
+  - [Registering and Using a Custom Objective](#registering-and-using-a-custom-objective)
+- [Architectural Overview](#architectural-overview)
+- [Included Objective Modules](#included-objective-modules)
+- [Contributing](#contributing)
 
-Arms: Each of the 12 objective functions is an "arm" of the bandit.
+## Core Concepts
 
-Action: At the beginning of each major training iteration (e.g., every 20,480 timesteps), the Meta-Controller "pulls an arm," selecting one objective function to be used for the next round of data collection and policy updates.
+The central idea behind this project is to move beyond static reward functions in reinforcement learning. By introducing a modular system for objectives, the PPO agent can be guided by different reward signals at different stages of training. This is managed by three key components:
 
-Reward: The "reward" for the bandit is the improvement in the agent's performance (e.g., the change in average extrinsic reward) after using the selected objective.
-This allows CAPO to learn which objective is most effective at different stages of training. For instance, it might favor exploration functions early on and switch to exploitation or fine-tuning functions later.
+1.  **ObjectiveModule**: An abstract base class that defines the interface for all reward-calculating modules. Each module encapsulates a specific reward logic (e.g., exploration, exploitation, similarity to a baseline).
 
-### The Reference Experience Buffer (R)
+2.  **ObjectiveRegistry**: A centralized registry that discovers and manages all available `ObjectiveModule` classes, including custom plugins.
 
-This buffer stores the top k trajectories (e.g., the 5% with the highest cumulative rewards) seen so far. After each training iteration, new trajectories that outperform the worst ones in the buffer are added, and the worst are discarded. This gives the algorithm a dynamic, high-quality "baseline" of its own best experiences to draw from.
+3.  **SwitchableObjectiveManager**: This orchestrator dynamically selects and combines objectives based on a predefined configuration. It can operate in a "single" mode (switching between individual objectives) or a "multi" mode (combining multiple objectives based on priority).
 
-### The 12 Surrogate Objective Functions
+The PPO agent interacts with this system to calculate a composite reward at each step, which is then used for policy updates.
 
-Each function calculates an intrinsic reward r_int which is added to the environment's extrinsic reward r_ext to form the total reward used for learning: r_total = r_ext + β * r_int, where β is a hyperparameter balancing the two. The policy is then updated using the standard PPO clipped surrogate objective, but the advantage Â is calculated based on r_total.
+## Features
 
-Here's a breakdown of how each of the 12 functions could be implemented:
+*   **Modular Objective System**: Easily define and plug in new reward functions without altering the core PPO algorithm.
+*   **Dynamic Switching**: Objectives can be switched periodically during training to encourage a curriculum of behaviors.
+*   **Multi-Objective Rewards**: Combine multiple objectives, weighted by importance, to create complex reward signals.
+*   **Baseline-Driven Objectives**: Several built-in objectives leverage a `BaselineManager` to compute rewards based on the agent's past experiences (e.g., rewarding exploration away from the mean trajectory).
+*   **Extensible Plugin Architecture**: The `ObjectiveRegistry` can automatically discover and load custom objective modules from specified directories.
+*   **Comprehensive Configuration**: Control all aspects of the agent and the objective system through a single configuration dictionary.
 
-### Objective 1: Exploration (Novelty-Seeking)
+## Getting Started
 
-Concept: Reward the agent for visiting states it has not seen before.
+### Prerequisites
 
-Implementation (inspired by RND): Use two neural networks: a fixed, randomly initialized "target network" and a "predictor network." The intrinsic reward is the prediction error between them.
+*   Python 3.7+
+*   PyTorch
+*   NumPy
 
-Intrinsic Reward r_1: ||predictor(state) - target(state)||^2. This reward is high for novel states and low for familiar ones.
+### Installation
 
-### Objective 2: Exploitation (Reward-Seeking)
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/your-username/ppo-dynamic-objectives.git
+    cd ppo-dynamic-objectives
+    ```
 
-Concept: Focus solely on maximizing the extrinsic reward from the environment.
-Implementation: This is the standard PPO behavior.
-Intrinsic Reward r_2: 0. The agent optimizes for the standard advantage function based only on environmental rewards.
+2.  Install the required dependencies:
+    ```bash
+    pip install torch numpy
+    ```
+## How to Use
 
-### Objective 3: Extrapolation from Baseline
+### Basic Training Loop
 
-Concept: Reward the agent for finding new trajectories that are "plausible" extensions of its best past experiences.
-Implementation: Train a forward dynamics model on the trajectories in the Reference Buffer R. This model learns to predict s_{t+1} from (s_t, a_t) for successful trajectories.
-Intrinsic Reward r_3: The reward is the negative prediction error of this dynamics model on the agent's current trajectory. This encourages the agent to follow paths that "look like" they could belong in the high-performance baseline.
+The following example demonstrates how to initialize and train the PPO agent with the dynamic objective system.
 
-### Objective 4: Spreading Data on a Dimension of Known Baselines
+```python
+import torch
+import numpy as np
 
-Concept: Encourage diversity within the high-performance state space.
-Implementation: Use an embedding of the states from the Reference Buffer R (e.g., from the critic's penultimate layer). Compute the covariance matrix of these state embeddings.
-Intrinsic Reward r_4: A reward for visiting a state that increases the determinant of this covariance matrix. This pushes the agent to visit states that expand the volume of the known "good" state distribution.
+# Assuming the classes from run.py are in the current scope
 
-### Objective 5: Data Gathering and Bootstrapping
+if __name__ == "__main__":
+    # 1. Define the configuration
+    config = {
+        "state_dim": 4,
+        "action_dim": 2,
+        "latent_dim": 64,
+        "lr_actor": 0.0003,
+        "lr_critic": 0.001,
+        "gamma": 0.99,
+        "gae_lambda": 0.95,
+        "clip_epsilon": 0.2,
+        "epochs": 10,
+        "value_loss_coeff": 0.5,
+        "entropy_coeff": 0.01,
+        "num_episodes": 1000,
+        "max_steps_per_episode": 200,
+        "baseline_update_freq": 10,
+        "objective_switching_freq": 50,
+        "mode": "single",  # "single" or "multi"
 
-Concept: Reward the agent for collecting data that is most informative for updating its policy.
-Implementation (Information Gain): The reward is proportional to how much the new data changes the policy.
-Intrinsic Reward r_5: The KL-divergence between the policy π_old before the update and the policy π_new after the update on the new data. KL(π_new || π_old). A large divergence implies the data was highly surprising and informative.
+        # Objective Configurations
+        "exploration": {
+            "name": "exploration",
+            "enabled": True,
+            "weight": 0.1
+        },
+        "exploitation": {
+            "name": "exploitation",
+            "enabled": True,
+            "weight": 0.5
+        },
+        "spreading": {
+            "name": "spreading",
+            "enabled": True,
+            "weight": 0.2
+        }
+    }
 
-### Objective 6: Minimizing Distance over Pairs in the Baseline
+    # 2. Initialize the PPO agent
+    agent = PPOAgent(config)
 
-Concept: Reward the agent for finding paths that connect different points within its successful past experiences.
-Implementation: For each state s_t the agent visits, sample two random states s_a and s_b from the Reference Buffer R.
-Intrinsic Reward r_6: Reward for being "on the path" between s_a and s_b. This can be formulated as d(s_a, s_b) - (d(s_t, s_a) + d(s_t, s_b)), where d is a distance metric in the embedding space. The reward is highest when s_t lies on the geodesic between s_a and s_b.
+    # 3. Start the training process
+    agent.train()
 
-### Objective 7: Metric Similarity to Baseline
-
-Concept: Reward the agent for staying close to states that are known to be part of successful trajectories.
-Implementation: For each state s_t the agent visits, find its nearest neighbor s_b in the Reference Buffer R.
-Intrinsic Reward r_7: exp(-||embed(s_t) - embed(s_b)||^2). The reward is high when the agent is in a state metrically similar to a known good state.
-
-### Objective 8: Interpolating Data for Exploration
-
-Concept: Create "imaginary" goals by interpolating between known good states and rewarding the agent for reaching them.
-Implementation (inspired by Hindsight Experience Replay): At the end of an episode, create an imaginary goal g_interp by interpolating between two states from the Reference Buffer R. Replay the episode, giving the agent a large reward at the timestep where its state was closest to g_interp.
-
-### Objective 9: Integrated Exploration and Learning
-
-Concept: Reward exploration that also makes the agent's internal model of the world more accurate.
-Implementation: Combine a novelty reward with a world model improvement reward. Use the RND reward from Objective 1, and add a term for the reduction in prediction error of a learned forward dynamics model.
-Intrinsic Reward r_9: r_1 + (error_old(s_t) - error_new(s_t)). This encourages visiting novel states that also reduce uncertainty in the agent's world model.
-
-### Objective 10: Metric Matching of Baseline Data
-
-Concept: A form of goal-conditioned imitation. Pick a state from the baseline and try to reach it.
-Implementation: At the start of each episode, sample a state s_g from the Reference Buffer R to serve as a goal for that episode.
-Intrinsic Reward r_{10}: A distance-based reward: exp(-||embed(s_t) - embed(s_g)||^2).
-
-### Objective 11: Spreading from Contrasting Baseline Data
-
-Concept: Identify distinct behaviors in the baseline and explore away from them to find new strategies.
-Implementation: Cluster the states in the Reference Buffer R into k clusters. Calculate the centroid c_i for each cluster.
-Intrinsic Reward r_{11}: Reward for visiting states that are far from all cluster centers: min_i ||embed(s_t) - c_i||^2. This encourages the agent to explore the boundaries of its known successful behaviors.
-
-### Objective 12: Extrapolating and Expanding the Baseline
-
-Concept: Reward the agent for pushing the boundaries of what is considered a "good" trajectory.
-Implementation: Use the dynamics model from Objective 3.
-Intrinsic Reward r_{12}: A combination of being plausible under the baseline dynamics model, but also being far from the existing baseline states. r_{12} = -||dynamics_model(s_t, a_t) - s_{t+1}||^2 + min_{s_b in R} ||embed(s_t) - embed(s_b)||^2.
-Summary of the CAPO Algorithm Flow
-Initialize policy π, critic V, Reference Buffer R, and Meta-Controller (bandit).
-
-### Loop for N iterations:
-
-a. Select Objective: The Meta-Controller selects an objective function J_i.
-b. Collect Data: The agent collects a batch of trajectories. For each step, calculate r_ext and the intrinsic reward r_i from the selected objective module.
-c. Compute Rewards & Advantages: Calculate r_total = r_ext + β * r_i. Compute advantages Â using GAE.
-d. Update Policy: For K epochs, update π and V using the PPO clipped surrogate objective on the collected data.
-e. Update Meta-Controller: Evaluate the change in agent performance (e.g., Δ avg(r_ext)). Use this value to update the statistics of the chosen bandit arm i.
-f. Update Reference Buffer: Add new, high-performing trajectories to R.
-
-This CAPO framework provides a principled way to combine multiple learning strategies within a single PPO-like algorithm, allowing the agent to dynamically adapt its learning process to the specific challenges it faces at any given moment.
+```
