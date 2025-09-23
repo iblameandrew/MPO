@@ -3,8 +3,6 @@
 <img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/69828e58-26ca-4b04-8ea0-6f4786239885" />
 
 
-The CAPO Algorithm
-
 ### The Meta-Controller: Dynamic Switching Mechanism
 
 The "context" is determined by the agent's recent performance and data statistics. The Meta-Controller is a high-level module that decides which of the 12 functions to use. A practical way to implement this is with a multi-armed bandit algorithm, such as Upper Confidence Bound (UCB1).
