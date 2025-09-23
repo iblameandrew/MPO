@@ -114,56 +114,138 @@ class DynamicsModel(nn.Module): # For Objective 3 & 9
         return self.model(torch.cat([state, action], dim=-1))
 
 
+
 class Objective1_Exploration(IntrinsicRewardModule):
     def __init__(self, state_dim, action_dim):
         super().__init__(state_dim, action_dim)
         self.rnd_model = RNDModel(state_dim)
+        # Note: The predictor part of rnd_model needs to be trained on states the agent visits.
 
     def compute_reward(self, state, **kwargs):
         state_tensor = torch.FloatTensor(state).unsqueeze(0)
+        # Reward is the novelty score (prediction error)
         return self.rnd_model(state_tensor).item()
 
 class Objective2_Exploitation(IntrinsicRewardModule):
     def compute_reward(self, **kwargs):
+        # No intrinsic reward, focuses solely on the environment's extrinsic reward.
         return 0.0
 
 class Objective3_Extrapolation(IntrinsicRewardModule):
     def __init__(self, state_dim, action_dim):
         super().__init__(state_dim, action_dim)
         self.dynamics_model = DynamicsModel(state_dim, action_dim)
-        # Note: This model needs to be trained on data from the reference buffer
+        # Note: This model needs to be trained on data from the reference buffer.
         
     def compute_reward(self, state, action, next_state, **kwargs):
         state_t = torch.FloatTensor(state).unsqueeze(0)
-        action_t = torch.FloatTensor([action]).unsqueeze(0) # Assuming discrete action
+        action_t = torch.tensor([action], dtype=torch.float32).unsqueeze(0)
         next_state_t = torch.FloatTensor(next_state).unsqueeze(0)
         
         pred_next_state = self.dynamics_model(state_t, action_t)
         error = torch.pow(pred_next_state - next_state_t, 2).mean().item()
-        return -error # Reward for low prediction error (i.e., behaving as expected)
+        # Reward is given for behaving in a way that is "predictable" by the baseline dynamics.
+        return -error
 
+class Objective4_Spreading(IntrinsicRewardModule):
+    def compute_reward(self, state, reference_buffer, **kwargs):
+        baseline_states = reference_buffer.get_states(batch_size=32)
+        if len(baseline_states) < 2:
+            return 0.0
+        
+        state_vec = np.array(state)
+        baseline_vecs = np.array(baseline_states)
+        
+        # Reward is proportional to the distance to the mean of the baseline states.
+        # This encourages the agent to explore the periphery of the known good states.
+        mean_baseline = np.mean(baseline_vecs, axis=0)
+        distance_to_mean = np.linalg.norm(state_vec - mean_baseline)
+        return distance_to_mean
 
 class Objective5_DataGathering(IntrinsicRewardModule):
     def compute_reward(self, state, actor_critic_model, **kwargs):
+        # Reward is the policy's entropy at the current state.
+        # High entropy means the policy is uncertain, so acting here is informative.
 
         state_t = torch.FloatTensor(state).unsqueeze(0)
-        logits, _ = actor_critic_model(state_t)
-        dist = Categorical(logits=logits)
+        with torch.no_grad():
+            logits, _ = actor_critic_model(state_t)
+            dist = Categorical(logits=logits)
         return dist.entropy().item()
+
+class Objective6_PairMinimization(IntrinsicRewardModule):
+    def compute_reward(self, state, reference_buffer, **kwargs):
+        s_a_list = reference_buffer.get_states(batch_size=1)
+        s_b_list = reference_buffer.get_states(batch_size=1)
+        if not s_a_list or not s_b_list:
+            return 0.0
+        
+        s_a = np.array(s_a_list[0])
+        s_b = np.array(s_b_list[0])
+        s_t = np.array(state)
+        
+        d_ab = np.linalg.norm(s_a - s_b)
+        d_at = np.linalg.norm(s_a - s_t)
+        d_tb = np.linalg.norm(s_t - s_b)
+        
+        return d_ab - (d_at + d_tb)
 
 class Objective7_MetricSimilarity(IntrinsicRewardModule):
     def compute_reward(self, state, reference_buffer, **kwargs):
-        baseline_states = reference_buffer.get_states(batch_size=16)
+        baseline_states = reference_buffer.get_states(batch_size=32)
         if not baseline_states:
             return 0.0
         
         state_vec = np.array(state)
         baseline_vecs = np.array(baseline_states)
         
-        distances = np.linalg.norm(state_vec - baseline_vecs, axis=1)
+        distances = np.linalg.norm(baseline_vecs - state_vec, axis=1)
         min_dist = np.min(distances)
         
         return np.exp(-min_dist**2)
+
+class Objective8_InterpolationGoal(IntrinsicRewardModule):
+    def __init__(self, state_dim, action_dim):
+        super().__init__(state_dim, action_dim)
+        self.goal_state = None
+
+    def new_episode(self, reference_buffer):
+        s_a_list = reference_buffer.get_states(batch_size=1)
+        s_b_list = reference_buffer.get_states(batch_size=1)
+        if s_a_list and s_b_list:
+            alpha = np.random.rand() # Random interpolation factor
+            self.goal_state = alpha * np.array(s_a_list[0]) + (1 - alpha) * np.array(s_b_list[0])
+        else:
+            self.goal_state = None
+            
+    def compute_reward(self, state, **kwargs):
+        if self.goal_state is None:
+            return 0.0
+        # Provide a goal-reaching reward for the interpolated state.
+        dist = np.linalg.norm(np.array(state) - self.goal_state)
+        return np.exp(-dist**2)
+
+class Objective9_IntegratedExploration(IntrinsicRewardModule):
+    def __init__(self, state_dim, action_dim):
+        super().__init__(state_dim, action_dim)
+        self.rnd_model = RNDModel(state_dim)
+        self.dynamics_model = DynamicsModel(state_dim, action_dim)
+        # Both models would need to be trained.
+        
+    def compute_reward(self, state, action, next_state, **kwargs):
+        state_t = torch.FloatTensor(state).unsqueeze(0)
+        action_t = torch.tensor([action], dtype=torch.float32).unsqueeze(0)
+        next_state_t = torch.FloatTensor(next_state).unsqueeze(0)
+
+        # Reward for novelty (high RND error)
+        novelty_reward = self.rnd_model(state_t).item()
+        
+        # Reward for being in a state where the world model is uncertain (high dynamics error)
+        pred_next_state = self.dynamics_model(state_t, action_t)
+        dynamics_error = torch.pow(pred_next_state - next_state_t, 2).mean().item()
+        
+        # Combine the two rewards.
+        return novelty_reward + dynamics_error
 
 class Objective10_MetricMatching(IntrinsicRewardModule):
     def __init__(self, state_dim, action_dim):
@@ -171,20 +253,56 @@ class Objective10_MetricMatching(IntrinsicRewardModule):
         self.goal_state = None
 
     def new_episode(self, reference_buffer):
-        """Sample a goal state for the episode."""
         goal_states = reference_buffer.get_states(batch_size=1)
         if goal_states:
             self.goal_state = goal_states[0]
+        else:
+            self.goal_state = None
 
     def compute_reward(self, state, **kwargs):
         if self.goal_state is None:
             return 0.0
-        
+        # Goal-reaching reward for a state sampled directly from the baseline.
         dist = np.linalg.norm(np.array(state) - np.array(self.goal_state))
         return np.exp(-dist**2)
 
+class Objective11_SpreadingFromBaseline(IntrinsicRewardModule):
+    def compute_reward(self, state, reference_buffer, **kwargs):
+        baseline_states = reference_buffer.get_states(batch_size=32)
+        if not baseline_states:
+            return 0.0
+        
+        state_vec = np.array(state)
+        baseline_vecs = np.array(baseline_states)
+        
+        distances = np.linalg.norm(baseline_vecs - state_vec, axis=1)
+        min_dist = np.min(distances)
+        
+        return min_dist
+
+class Objective12_ExpandingBaseline(IntrinsicRewardModule):
+    def __init__(self, state_dim, action_dim):
+        super().__init__(state_dim, action_dim)
+        self.dynamics_model = DynamicsModel(state_dim, action_dim)
+        
+    def compute_reward(self, state, action, next_state, reference_buffer, **kwargs):
+
+        state_t = torch.FloatTensor(state).unsqueeze(0)
+        action_t = torch.tensor([action], dtype=torch.float32).unsqueeze(0)
+        next_state_t = torch.FloatTensor(next_state).unsqueeze(0)
+        pred_next_state = self.dynamics_model(state_t, action_t)
+        dynamics_error = torch.pow(pred_next_state - next_state_t, 2).mean().item()
+        plausibility_reward = -dynamics_error
+        
+        novelty_reward = Objective11_SpreadingFromBaseline.compute_reward(
+            self, state, reference_buffer, **kwargs
+        )
+        
+        return plausibility_reward + 0.1 * novelty_reward
+
+
 class StubbedObjective(IntrinsicRewardModule):
-    def compute_reward(self, **kwargs): return 0.0```
+    def compute_reward(self, **kwargs): return 0.0
 
 
 class CAPOAgent:
